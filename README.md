@@ -1,5 +1,9 @@
 # dupes
 
+![CI](https://github.com/MaplesMcDepth/dupes/actions/workflows/ci.yml/badge.svg)
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+
+
 Find and optionally remove duplicate files.
 
 ## Install
