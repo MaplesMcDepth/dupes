@@ -30,3 +30,36 @@ dupes -r -m 1024 /path       # Only files > 1KB
 | `-n` | Dry run |
 | `-r` | Recursive |
 | `-m int` | Min file size in bytes |
+
+## AI Agent Features
+
+### JSON Output (`-j`)
+All tools support structured JSON output for programmatic consumption:
+
+```bash
+git-standup -j              # Machine-readable commit history
+dupes -j /path              # Structured duplicate report
+watch -j '*.go' go test     # JSON events with output + exit codes
+```
+
+### Quiet Mode (`-q`)
+Suppress human-readable output. Useful in automated workflows:
+
+```bash
+git-standup -jq             # JSON only, no headers
+dupes -jq /path             # JSON only, no progress
+```
+
+### Environment Variables
+- `STANDUP_DAYS` — Default days back for git-standup
+
+### Webhook Support (watch)
+POST events to a URL when files change:
+
+```bash
+watch -w http://localhost:8080/hook '*.go' go build
+```
+
+### Exit Codes
+- `0` — Success / no issues found
+- `1` — Error or duplicates found (dupes)

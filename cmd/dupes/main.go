@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -20,14 +21,37 @@ Options:
   -n             Dry run (show what would be deleted)
   -r             Recursive search
   -m int         Min file size in bytes (default 1)
+  -j             JSON output (agent-friendly)
+  -q             Quiet mode (no progress)
 
 Examples:
   dupes /path                  # Find duplicates
   dupes -r /path               # Recursive
   dupes -d /path               # Delete duplicates
-  dupes -dn /path              # Dry run delete
-  dupes -r -m 1024 /path       # Only files > 1KB
+  dupes -j /path               # JSON output for agents
+  dupes -jq /path              # JSON, quiet
 `)
+}
+
+type FileEntry struct {
+	Path string `json:"path"`
+	Size int64  `json:"size"`
+	Hash string `json:"hash"`
+}
+
+type DuplicateGroup struct {
+	Hash      string      `json:"hash"`
+	Size      int64       `json:"size"`
+	Files     []FileEntry `json:"files"`
+	Original  string      `json:"original"`
+}
+
+type DupesReport struct {
+	Scanned     int              `json:"scanned"`
+	Duplicates  int              `json:"duplicates"`
+	Groups      int              `json:"groups"`
+	WastedBytes int64            `json:"wasted_bytes"`
+	GroupsList  []DuplicateGroup `json:"groups_list,omitempty"`
 }
 
 type fileInfo struct {
@@ -42,6 +66,8 @@ func main() {
 		dryRun  = flag.Bool("n", false, "Dry run")
 		recursive = flag.Bool("r", false, "Recursive search")
 		minSize = flag.Int64("m", 1, "Min file size in bytes")
+		jsonOut = flag.Bool("j", false, "JSON output")
+		quiet   = flag.Bool("q", false, "Quiet mode")
 	)
 	flag.Usage = usage
 	flag.Parse()
@@ -53,11 +79,10 @@ func main() {
 
 	root := flag.Arg(0)
 	
-	// Collect files
 	var files []fileInfo
 	walkFn := func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return nil // skip errors
+			return nil
 		}
 		if info.IsDir() {
 			if !*recursive && path != root {
@@ -78,8 +103,10 @@ func main() {
 	}
 
 	if len(files) == 0 {
-		fmt.Println("No files found")
-		return
+		if !*quiet && !*jsonOut {
+			fmt.Println("No files found")
+		}
+		os.Exit(0)
 	}
 
 	// Group by size first (fast check)
@@ -113,30 +140,72 @@ func main() {
 		}
 	}
 
-	if len(dupes) == 0 {
-		fmt.Println("No duplicates found")
+	// Build report
+	totalDupes := 0
+	totalBytes := int64(0)
+	var groupsList []DuplicateGroup
+
+	for _, group := range dupes {
+		var entries []FileEntry
+		for _, f := range group {
+			entries = append(entries, FileEntry{
+				Path: f.path,
+				Size: f.size,
+				Hash: f.hash,
+			})
+		}
+		groupsList = append(groupsList, DuplicateGroup{
+			Hash:     group[0].hash,
+			Size:     group[0].size,
+			Files:    entries,
+			Original: group[0].path,
+		})
+		for i := 1; i < len(group); i++ {
+			totalDupes++
+			totalBytes += group[i].size
+		}
+	}
+
+	if *jsonOut {
+		report := DupesReport{
+			Scanned:     len(files),
+			Duplicates:  totalDupes,
+			Groups:      len(dupes),
+			WastedBytes: totalBytes,
+			GroupsList:  groupsList,
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		enc.Encode(report)
 		return
 	}
 
-	// Output results
-	totalDupes := 0
-	totalBytes := int64(0)
+	if len(dupes) == 0 {
+		if !*quiet {
+			fmt.Println("No duplicates found")
+		}
+		os.Exit(0)
+	}
 
 	for _, group := range dupes {
-		fmt.Printf("\n%s (%d bytes)\n", filepath.Base(group[0].path), group[0].size)
+		if !*quiet {
+			fmt.Printf("\n%s (%d bytes)\n", filepath.Base(group[0].path), group[0].size)
+		}
 		for i, f := range group {
 			marker := "  [original]"
 			if i > 0 {
 				marker = "  [duplicate]"
-				totalDupes++
-				totalBytes += f.size
 			}
-			fmt.Printf("  %s%s\n", f.path, marker)
+			if !*quiet {
+				fmt.Printf("  %s%s\n", f.path, marker)
+			}
 		}
 	}
 
-	fmt.Printf("\nFound %d duplicate file(s), %s wasted\n", 
-		totalDupes, humanSize(totalBytes))
+	if !*quiet {
+		fmt.Printf("\nFound %d duplicate file(s), %s wasted\n", 
+			totalDupes, humanSize(totalBytes))
+	}
 
 	// Handle deletion
 	if *delete || *dryRun {
@@ -144,22 +213,30 @@ func main() {
 		if *dryRun {
 			action = "Would delete"
 		}
-		fmt.Printf("\n%s %d duplicate file(s)...\n", action, totalDupes)
+		if !*quiet {
+			fmt.Printf("\n%s %d duplicate file(s)...\n", action, totalDupes)
+		}
 		
 		deleted := 0
 		for _, group := range dupes {
 			for i := 1; i < len(group); i++ {
 				if !*dryRun {
 					if err := os.Remove(group[i].path); err != nil {
-						fmt.Fprintf(os.Stderr, "  Error deleting %s: %v\n", group[i].path, err)
+						if !*quiet {
+							fmt.Fprintf(os.Stderr, "  Error deleting %s: %v\n", group[i].path, err)
+						}
 						continue
 					}
 				}
-				fmt.Printf("  %s\n", group[i].path)
+				if !*quiet {
+					fmt.Printf("  %s\n", group[i].path)
+				}
 				deleted++
 			}
 		}
-		fmt.Printf("\n%s %d file(s)\n", action, deleted)
+		if !*quiet {
+			fmt.Printf("\n%s %d file(s)\n", action, deleted)
+		}
 	}
 }
 
